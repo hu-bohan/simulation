@@ -18,6 +18,7 @@ VIDEO_WIDTH = 1280
 VIDEO_HEIGHT = 720
 VIDEO_FPS = 50
 VIDEO_FRAME_STRIDE = 1
+VIDEO_HORIZONTAL_FOV_DEG = 75.0
 VIDEO_TRACK_ENV = 0
 VIDEO_CAMERA_OFFSET = np.array([-2.8, -1.6, 1.4], dtype=np.float32)
 VIDEO_TARGET_OFFSET = np.array([0.4, 0.0, 0.35], dtype=np.float32)
@@ -52,20 +53,167 @@ def _compose_low_level_actions(env, locomotion_policy, recovery_policy):
     return actions
 
 
+def _normalize(vector):
+    norm = np.linalg.norm(vector)
+    if norm < 1e-6:
+        return vector
+    return vector / norm
+
+
+def _get_camera_pose(env):
+    robot_pos = env.root_states[VIDEO_TRACK_ENV, 0:3].detach().cpu().numpy()
+    camera_pos = robot_pos + VIDEO_CAMERA_OFFSET
+    target_pos = robot_pos + VIDEO_TARGET_OFFSET
+    return camera_pos.astype(np.float32), target_pos.astype(np.float32)
+
+
+def _project_world_points(world_points, camera_pos, target_pos):
+    if len(world_points) == 0:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0,), dtype=bool), 1.0, 1.0
+
+    forward = _normalize(target_pos - camera_pos)
+    world_up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    right = np.cross(forward, world_up)
+    if np.linalg.norm(right) < 1e-6:
+        right = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    right = _normalize(right)
+    up = _normalize(np.cross(right, forward))
+
+    rel = world_points - camera_pos[None, :]
+    x_cam = rel @ right
+    y_cam = rel @ up
+    z_cam = rel @ forward
+
+    h_fov = np.deg2rad(VIDEO_HORIZONTAL_FOV_DEG)
+    v_fov = 2.0 * np.arctan(np.tan(h_fov * 0.5) * (VIDEO_HEIGHT / VIDEO_WIDTH))
+    fx = VIDEO_WIDTH / (2.0 * np.tan(h_fov * 0.5))
+    fy = VIDEO_HEIGHT / (2.0 * np.tan(v_fov * 0.5))
+
+    visible = z_cam > 0.05
+    z_safe = np.clip(z_cam, 1e-4, None)
+    u = fx * (x_cam / z_safe) + VIDEO_WIDTH * 0.5
+    v = VIDEO_HEIGHT * 0.5 - fy * (y_cam / z_safe)
+    projected = np.stack([u, v, z_cam], axis=1)
+    return projected, visible, fx, fy
+
+
+def _draw_navigation_overlay(frame_bgr, env, camera_pos, target_pos):
+    overlay = frame_bgr.copy()
+    origin = env.env_origins[VIDEO_TRACK_ENV].detach().cpu().numpy()
+    path_shift_y = env.cfg.navigation.field_width * 0.5
+
+    path_local = env.path_points_local.detach().cpu().numpy()[::2]
+    path_world = np.column_stack(
+        [
+            origin[0] + path_local[:, 0],
+            origin[1] + path_local[:, 1] - path_shift_y,
+            np.full(path_local.shape[0], origin[2] + 0.05, dtype=np.float32),
+        ]
+    ).astype(np.float32)
+
+    projected_path, path_visible, _, _ = _project_world_points(path_world, camera_pos, target_pos)
+    for idx in range(len(projected_path) - 1):
+        if not (path_visible[idx] and path_visible[idx + 1]):
+            continue
+        p0 = projected_path[idx]
+        p1 = projected_path[idx + 1]
+        cv2.line(
+            overlay,
+            (int(round(p0[0])), int(round(p0[1]))),
+            (int(round(p1[0])), int(round(p1[1]))),
+            (255, 200, 0),
+            2,
+            lineType=cv2.LINE_AA,
+        )
+
+    goal_local = env.goal_local.detach().cpu().numpy()
+    goal_world = np.array(
+        [[origin[0] + goal_local[0], origin[1] + goal_local[1] - path_shift_y, origin[2] + 0.15]],
+        dtype=np.float32,
+    )
+    projected_goal, goal_visible, fx, _ = _project_world_points(goal_world, camera_pos, target_pos)
+    if goal_visible[0]:
+        goal_depth = max(projected_goal[0, 2], 0.2)
+        goal_radius = max(8, int(round(fx * env.cfg.navigation.goal_tolerance / goal_depth)))
+        goal_center = (int(round(projected_goal[0, 0])), int(round(projected_goal[0, 1])))
+        cv2.circle(overlay, goal_center, goal_radius, (0, 220, 0), 2, lineType=cv2.LINE_AA)
+        cv2.putText(
+            overlay,
+            "goal",
+            (goal_center[0] + 8, goal_center[1] - 8),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 220, 0),
+            1,
+            cv2.LINE_AA,
+        )
+
+    obstacle_local = env.obstacle_positions[VIDEO_TRACK_ENV].detach().cpu().numpy()
+    obstacle_radii = env.obstacle_radii[VIDEO_TRACK_ENV].detach().cpu().numpy()
+    obstacle_world = np.column_stack(
+        [
+            origin[0] + obstacle_local[:, 0],
+            origin[1] + obstacle_local[:, 1] - path_shift_y,
+            np.full(obstacle_local.shape[0], origin[2] + 0.12, dtype=np.float32),
+        ]
+    ).astype(np.float32)
+    projected_obstacles, obstacle_visible, fx, _ = _project_world_points(
+        obstacle_world, camera_pos, target_pos
+    )
+    for idx, radius in enumerate(obstacle_radii):
+        if radius <= 0.0 or not obstacle_visible[idx]:
+            continue
+        depth = max(projected_obstacles[idx, 2], 0.2)
+        pixel_radius = max(6, int(round(fx * radius / depth)))
+        center = (int(round(projected_obstacles[idx, 0])), int(round(projected_obstacles[idx, 1])))
+        cv2.circle(overlay, center, pixel_radius, (0, 0, 255), 2, lineType=cv2.LINE_AA)
+
+    cv2.putText(
+        overlay,
+        "path",
+        (24, 36),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (255, 200, 0),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        overlay,
+        "goal",
+        (24, 64),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (0, 220, 0),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        overlay,
+        "obstacles",
+        (24, 92),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (0, 0, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    return overlay
+
+
 def _create_video_recorder(env, experiment_name):
     video_env = VIDEO_TRACK_ENV
     camera_properties = gymapi.CameraProperties()
     camera_properties.width = VIDEO_WIDTH
     camera_properties.height = VIDEO_HEIGHT
+    camera_properties.horizontal_fov = VIDEO_HORIZONTAL_FOV_DEG
     camera_handle = env.gym.create_camera_sensor(env.envs[video_env], camera_properties)
     if camera_handle == -1:
         raise RuntimeError(
             "Failed to create camera sensor. Offscreen rendering needs a graphics device even in headless mode."
         )
 
-    robot_pos = env.root_states[video_env, 0:3].detach().cpu().numpy()
-    camera_pos = robot_pos + VIDEO_CAMERA_OFFSET
-    target_pos = robot_pos + VIDEO_TARGET_OFFSET
+    camera_pos, target_pos = _get_camera_pose(env)
 
     env.gym.set_camera_location(
         camera_handle,
@@ -94,9 +242,7 @@ def _create_video_recorder(env, experiment_name):
 
 
 def _write_video_frame(env, camera_handle):
-    robot_pos = env.root_states[VIDEO_TRACK_ENV, 0:3].detach().cpu().numpy()
-    camera_pos = robot_pos + VIDEO_CAMERA_OFFSET
-    target_pos = robot_pos + VIDEO_TARGET_OFFSET
+    camera_pos, target_pos = _get_camera_pose(env)
 
     env.gym.set_camera_location(
         camera_handle,
@@ -112,7 +258,8 @@ def _write_video_frame(env, camera_handle):
     if frame is None or len(frame) == 0:
         raise RuntimeError("Camera sensor returned an empty frame while writing video.")
     frame = np.reshape(frame, (VIDEO_HEIGHT, VIDEO_WIDTH, 4))
-    return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+    return _draw_navigation_overlay(frame_bgr, env, camera_pos, target_pos)
 
 
 def play(args):
@@ -120,9 +267,14 @@ def play(args):
     env_cfg.env.num_envs = 1
     env_cfg.env.is_train = True
     env_cfg.env.enable_camera_sensors = CREATE_VIDEO
-    env_cfg.env.episode_length_s = 60
+    env_cfg.env.episode_length_s = 180
     env_cfg.terrain.curriculum = False
+    env_cfg.terrain.mesh_type = "plane"
     env_cfg.commands.curriculum = False
+    env_cfg.commands.trap_time = 30
+    env_cfg.navigation.terminate_on_body_contact = False
+    env_cfg.navigation.terminate_on_trap = False
+    env_cfg.navigation.terminate_on_collision = False
 
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     env.reset()
@@ -173,11 +325,15 @@ def play(args):
 
             if bool(nav_dones[0].item()):
                 status = env.get_navigation_status(0)
+                reasons = env.get_termination_status(0)
                 print(
                     "episode reset | "
-                    f"goal={status['goal_reached']} "
-                    f"collision={status['collision']} "
-                    f"out_of_bounds={status['out_of_bounds']} "
+                    f"goal={reasons['goal_reached']} "
+                    f"collision={reasons['collision']} "
+                    f"out_of_bounds={reasons['out_of_bounds']} "
+                    f"body_contact={reasons['body_contact']} "
+                    f"trap={reasons['trap']} "
+                    f"timeout={reasons['timeout']} "
                     f"reward={nav_rewards[0].item():.2f}"
                 )
     finally:

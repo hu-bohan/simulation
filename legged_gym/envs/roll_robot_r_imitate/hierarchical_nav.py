@@ -84,6 +84,12 @@ class rollRobotR_hierarchical_nav(rollRobotR):
         self.nav_collision_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.nav_reached_goal_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.nav_out_of_bounds_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.term_body_contact_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.term_timeout_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.term_trap_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.term_collision_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.term_goal_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.term_out_of_bounds_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
     def _build_desired_path(self):
         path_cfg = self.cfg.navigation
@@ -379,17 +385,39 @@ class rollRobotR_hierarchical_nav(rollRobotR):
 
     def check_termination(self):
         self._update_navigation_state()
+        nav_cfg = self.cfg.navigation
+
+        if self.termination_contact_indices.numel() > 0:
+            body_contact = torch.any(
+                torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1.0,
+                dim=1,
+            )
+        else:
+            body_contact = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         long_time_trap = self.trap_static_time > self.cfg.commands.trap_time
-        self.reset_buf = torch.any(
-            torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1.0, dim=1
-        )
         self.time_out_buf = self.episode_length_buf > self.max_episode_length
-        self.reset_buf |= self.time_out_buf
-        self.reset_buf |= long_time_trap
-        self.reset_buf |= self.nav_collision_buf
-        self.reset_buf |= self.nav_reached_goal_buf
-        self.reset_buf |= self.nav_out_of_bounds_buf
+
+        self.term_body_contact_buf[:] = body_contact
+        self.term_timeout_buf[:] = self.time_out_buf
+        self.term_trap_buf[:] = long_time_trap
+        self.term_collision_buf[:] = self.nav_collision_buf
+        self.term_goal_buf[:] = self.nav_reached_goal_buf
+        self.term_out_of_bounds_buf[:] = self.nav_out_of_bounds_buf
+
+        self.reset_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        if nav_cfg.terminate_on_body_contact:
+            self.reset_buf |= body_contact
+        if nav_cfg.terminate_on_timeout:
+            self.reset_buf |= self.time_out_buf
+        if nav_cfg.terminate_on_trap:
+            self.reset_buf |= long_time_trap
+        if nav_cfg.terminate_on_collision:
+            self.reset_buf |= self.nav_collision_buf
+        if nav_cfg.terminate_on_goal:
+            self.reset_buf |= self.nav_reached_goal_buf
+        if nav_cfg.terminate_on_out_of_bounds:
+            self.reset_buf |= self.nav_out_of_bounds_buf
 
     def compute_reward(self):
         nav_cfg = self.cfg.navigation
@@ -492,6 +520,16 @@ class rollRobotR_hierarchical_nav(rollRobotR):
             "collision": bool(self.nav_collision_buf[env_id].item()),
             "goal_reached": bool(self.nav_reached_goal_buf[env_id].item()),
             "out_of_bounds": bool(self.nav_out_of_bounds_buf[env_id].item()),
+        }
+
+    def get_termination_status(self, env_id=0):
+        return {
+            "body_contact": bool(self.term_body_contact_buf[env_id].item()),
+            "timeout": bool(self.term_timeout_buf[env_id].item()),
+            "trap": bool(self.term_trap_buf[env_id].item()),
+            "collision": bool(self.term_collision_buf[env_id].item()),
+            "goal_reached": bool(self.term_goal_buf[env_id].item()),
+            "out_of_bounds": bool(self.term_out_of_bounds_buf[env_id].item()),
         }
 
     def draw_debug_vis(self):

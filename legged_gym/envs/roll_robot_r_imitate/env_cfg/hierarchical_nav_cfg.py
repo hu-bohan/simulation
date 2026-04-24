@@ -7,7 +7,7 @@ class rollRobotR_hierarchical_nav_Cfg(rollRobotR_history_imitate_Cfg):
     class env(rollRobotR_history_imitate_Cfg.env):
         num_envs = 64
         num_observations = 8 + 4 * 4
-        episode_length_s = 30
+        episode_length_s = 180
         include_history_steps = None
 
     class terrain(rollRobotR_history_imitate_Cfg.terrain):
@@ -76,6 +76,13 @@ class rollRobotR_hierarchical_nav_Cfg(rollRobotR_history_imitate_Cfg):
         recovery_release_gravity_z = -0.95
         recovery_settle_ang_vel = 0.5
         protective_pose = [0.0, -0.2, -0.8]
+
+        terminate_on_body_contact = False
+        terminate_on_timeout = True
+        terminate_on_trap = False
+        terminate_on_collision = False
+        terminate_on_goal = True
+        terminate_on_out_of_bounds = True
 
         locomotion_policy_path = "logs/locomotion.pt"
         recovery_policy_path = "logs/recovery.pt"
