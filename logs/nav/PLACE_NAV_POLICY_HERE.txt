@@ -1,0 +1,13 @@
+Place the trained upper-level navigation policy here.
+
+Default path expected by the hierarchical navigation demo:
+
+logs/nav/td3_ship_best_actor.pt
+
+You can also change the path in:
+
+legged_gym/envs/roll_robot_r_imitate/env_cfg/hierarchical_nav_cfg.py
+
+Field:
+
+rollRobotR_hierarchical_nav_Cfg.navigation.nav_policy_path

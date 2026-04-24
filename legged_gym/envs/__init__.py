@@ -16,3 +16,13 @@ from .roll_robot_r_imitate.agent_cfg.imitate import rollRobotR_imitate_CfgPPO
 from .roll_robot_r_imitate.env_cfg.history_obs_imitate_cfg import  rollRobotR_history_imitate_Cfg
 from .roll_robot_r_imitate.history_obs_imitate import rollRobotR_history_imitate
 task_registry.register("roll_robot_r_history_imitate", rollRobotR_history_imitate, rollRobotR_history_imitate_Cfg(), rollRobotR_imitate_CfgPPO())
+
+from .roll_robot_r_imitate.agent_cfg.hierarchical_nav import rollRobotR_hierarchical_nav_CfgPPO
+from .roll_robot_r_imitate.env_cfg.hierarchical_nav_cfg import rollRobotR_hierarchical_nav_Cfg
+from .roll_robot_r_imitate.hierarchical_nav import rollRobotR_hierarchical_nav
+task_registry.register(
+    "roll_robot_r_hierarchical_nav",
+    rollRobotR_hierarchical_nav,
+    rollRobotR_hierarchical_nav_Cfg(),
+    rollRobotR_hierarchical_nav_CfgPPO(),
+)
