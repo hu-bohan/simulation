@@ -56,8 +56,10 @@ class BaseTask():
             self.device = 'cpu'
 
         # graphics device for rendering, -1 for no rendering
+        # Keep graphics enabled in headless mode when offscreen camera sensors are needed.
         self.graphics_device_id = self.sim_device_id
-        if self.headless == True:
+        self.enable_camera_sensors = getattr(cfg.env, "enable_camera_sensors", False)
+        if self.headless and not self.enable_camera_sensors:
             self.graphics_device_id = -1
 
         self.num_envs = cfg.env.num_envs

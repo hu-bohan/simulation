@@ -58,6 +58,10 @@ def _create_video_recorder(env, experiment_name):
     camera_properties.width = VIDEO_WIDTH
     camera_properties.height = VIDEO_HEIGHT
     camera_handle = env.gym.create_camera_sensor(env.envs[video_env], camera_properties)
+    if camera_handle == -1:
+        raise RuntimeError(
+            "Failed to create camera sensor. Offscreen rendering needs a graphics device even in headless mode."
+        )
 
     robot_pos = env.root_states[video_env, 0:3].detach().cpu().numpy()
     camera_pos = robot_pos + VIDEO_CAMERA_OFFSET
@@ -69,9 +73,14 @@ def _create_video_recorder(env, experiment_name):
         gymapi.Vec3(float(camera_pos[0]), float(camera_pos[1]), float(camera_pos[2])),
         gymapi.Vec3(float(target_pos[0]), float(target_pos[1]), float(target_pos[2])),
     )
+    if env.device != "cpu":
+        env.gym.fetch_results(env.sim, True)
+    env.gym.step_graphics(env.sim)
     env.gym.render_all_camera_sensors(env.sim)
 
     first_frame = env.gym.get_camera_image(env.sim, env.envs[video_env], camera_handle, gymapi.IMAGE_COLOR)
+    if first_frame is None or len(first_frame) == 0:
+        raise RuntimeError("Camera sensor returned an empty frame during recorder initialization.")
     first_frame = np.reshape(first_frame, (VIDEO_HEIGHT, VIDEO_WIDTH, 4))
     frame_size = (first_frame.shape[1], first_frame.shape[0])
 
@@ -95,8 +104,13 @@ def _write_video_frame(env, camera_handle):
         gymapi.Vec3(float(camera_pos[0]), float(camera_pos[1]), float(camera_pos[2])),
         gymapi.Vec3(float(target_pos[0]), float(target_pos[1]), float(target_pos[2])),
     )
+    if env.device != "cpu":
+        env.gym.fetch_results(env.sim, True)
+    env.gym.step_graphics(env.sim)
     env.gym.render_all_camera_sensors(env.sim)
     frame = env.gym.get_camera_image(env.sim, env.envs[VIDEO_TRACK_ENV], camera_handle, gymapi.IMAGE_COLOR)
+    if frame is None or len(frame) == 0:
+        raise RuntimeError("Camera sensor returned an empty frame while writing video.")
     frame = np.reshape(frame, (VIDEO_HEIGHT, VIDEO_WIDTH, 4))
     return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
 
@@ -105,6 +119,7 @@ def play(args):
     env_cfg, _ = task_registry.get_cfgs(name=args.task)
     env_cfg.env.num_envs = 1
     env_cfg.env.is_train = True
+    env_cfg.env.enable_camera_sensors = CREATE_VIDEO
     env_cfg.env.episode_length_s = 60
     env_cfg.terrain.curriculum = False
     env_cfg.commands.curriculum = False
