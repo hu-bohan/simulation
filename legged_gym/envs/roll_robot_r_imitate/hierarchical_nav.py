@@ -81,6 +81,9 @@ class rollRobotR_hierarchical_nav(rollRobotR):
         self.nav_prev_cross_track_error = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
         self.nav_prev_lookahead_distance = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
         self.nav_min_clearance = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
+        self.nav_front_clearance = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
+        self.nav_path_follow_blend = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
+        self.nav_speed_scale = torch.ones(self.num_envs, device=self.device, dtype=torch.float)
         self.nav_collision_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.nav_reached_goal_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.nav_out_of_bounds_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -241,6 +244,9 @@ class rollRobotR_hierarchical_nav(rollRobotR):
 
         self.nav_command_buffer[env_ids] = 0.0
         self.nav_last_actions[env_ids] = 0.0
+        self.nav_front_clearance[env_ids] = self.cfg.navigation.safety_slow_clearance + 1.0
+        self.nav_path_follow_blend[env_ids] = 1.0
+        self.nav_speed_scale[env_ids] = 1.0
         self.commands[env_ids, :3] = 0.0
         self.recovery_mode[env_ids] = False
         self._update_navigation_state()
@@ -274,6 +280,7 @@ class rollRobotR_hierarchical_nav(rollRobotR):
         path_heading = torch.atan2(tangent_unit[:, 1], tangent_unit[:, 0])
         heading_error = wrap_to_pi(path_heading - heading)
         goal_distance = torch.norm(local_pos - self.goal_local.unsqueeze(0), dim=1)
+        goal_forward_distance = torch.clamp(self.goal_local[0] - local_pos[:, 0], min=0.0)
         lookahead_distance = torch.norm(local_pos - lookahead_point, dim=1)
 
         obstacle_delta = self.obstacle_positions - local_pos.unsqueeze(1)
@@ -314,7 +321,7 @@ class rollRobotR_hierarchical_nav(rollRobotR):
             torch.cos(heading).unsqueeze(1),
             torch.clamp(cross_track / 20.0, -1.0, 1.0).unsqueeze(1),
             torch.clamp(heading_error / math.pi, -1.0, 1.0).unsqueeze(1),
-            torch.clamp(goal_distance / nav_cfg.field_length, 0.0, 1.5).unsqueeze(1),
+            torch.clamp(goal_forward_distance / nav_cfg.field_length, 0.0, 1.5).unsqueeze(1),
             obstacle_features,
         ]
 
@@ -482,6 +489,71 @@ class rollRobotR_hierarchical_nav(rollRobotR):
         self.compute_observations()
         return self.get_nav_observations(), self.get_student_obs()
 
+    def _get_body_obstacle_geometry(self):
+        obstacle_delta = self.obstacle_positions - self.nav_local_pos.unsqueeze(1)
+        obstacle_distance = torch.norm(obstacle_delta, dim=2)
+        clearance = obstacle_distance - self.obstacle_radii - self.cfg.navigation.robot_radius
+
+        cos_h = torch.cos(self.nav_heading).unsqueeze(1)
+        sin_h = torch.sin(self.nav_heading).unsqueeze(1)
+        body_x = cos_h * obstacle_delta[:, :, 0] + sin_h * obstacle_delta[:, :, 1]
+        body_y = -sin_h * obstacle_delta[:, :, 0] + cos_h * obstacle_delta[:, :, 1]
+        return body_x, body_y, clearance
+
+    def _compute_front_obstacle_clearance(self):
+        nav_cfg = self.cfg.navigation
+        body_x, body_y, clearance = self._get_body_obstacle_geometry()
+        lateral_limit = self.obstacle_radii + nav_cfg.robot_radius + nav_cfg.safety_lateral_margin
+        front_mask = (
+            (body_x > 0.0)
+            & (body_x < nav_cfg.safety_front_distance)
+            & (torch.abs(body_y) < lateral_limit)
+        )
+
+        shield_clearance = clearance - nav_cfg.safety_radius_buffer
+        far_clearance = torch.full_like(shield_clearance, nav_cfg.safety_slow_clearance + 1.0)
+        front_clearance = torch.where(front_mask, shield_clearance, far_clearance).min(dim=1).values
+        return front_clearance
+
+    def _blend_path_following_yaw(self, policy_yaw, front_clearance):
+        nav_cfg = self.cfg.navigation
+        if not nav_cfg.path_following_enabled:
+            return policy_yaw, torch.zeros_like(policy_yaw)
+
+        clearance_range = max(nav_cfg.path_follow_full_clearance - nav_cfg.path_follow_policy_clearance, 1e-6)
+        path_blend = torch.clamp(
+            (front_clearance - nav_cfg.path_follow_policy_clearance) / clearance_range,
+            0.0,
+            1.0,
+        )
+        path_yaw = (
+            nav_cfg.path_follow_heading_gain * self.nav_heading_error
+            - nav_cfg.path_follow_track_gain * self.nav_cross_track_error
+        )
+        path_yaw = torch.clamp(path_yaw, -nav_cfg.max_yaw_command, nav_cfg.max_yaw_command)
+        target_yaw = (1.0 - path_blend) * policy_yaw + path_blend * path_yaw
+        return target_yaw, path_blend
+
+    def _compute_forward_speed_scale(self, target_yaw, front_clearance):
+        nav_cfg = self.cfg.navigation
+        if nav_cfg.safety_shield_enabled:
+            clearance_range = max(nav_cfg.safety_slow_clearance - nav_cfg.safety_stop_clearance, 1e-6)
+            obstacle_speed_scale = torch.clamp(
+                (front_clearance - nav_cfg.safety_stop_clearance) / clearance_range,
+                0.0,
+                1.0,
+            )
+        else:
+            obstacle_speed_scale = torch.ones_like(target_yaw)
+
+        yaw_fraction = torch.clamp(torch.abs(target_yaw) / max(nav_cfg.max_yaw_command, 1e-6), 0.0, 1.0)
+        turn_speed_scale = torch.clamp(
+            1.0 - nav_cfg.turn_speed_reduction * yaw_fraction,
+            min=nav_cfg.min_turn_speed_scale,
+            max=1.0,
+        )
+        return torch.minimum(obstacle_speed_scale, turn_speed_scale)
+
     def apply_navigation_actions(self, nav_actions):
         nav_actions = torch.clamp(nav_actions, -1.0, 1.0).to(self.device)
         nav_cfg = self.cfg.navigation
@@ -493,12 +565,30 @@ class rollRobotR_hierarchical_nav(rollRobotR):
         target_commands[:, 0] = torch.where(
             thrust_norm < 0.05, torch.zeros_like(target_commands[:, 0]), target_commands[:, 0]
         )
-        target_commands[:, 2] = nav_actions[:, 0] * nav_cfg.max_yaw_command
+        policy_yaw = nav_actions[:, 0] * nav_cfg.max_yaw_command
+        front_clearance = self._compute_front_obstacle_clearance()
+        policy_clearance = torch.minimum(front_clearance, self.nav_min_clearance - nav_cfg.safety_radius_buffer)
+        target_yaw, path_blend = self._blend_path_following_yaw(policy_yaw, policy_clearance)
+        speed_scale = self._compute_forward_speed_scale(target_yaw, front_clearance)
 
-        smoothing = nav_cfg.command_smoothing
-        self.nav_command_buffer[:] = smoothing * self.nav_command_buffer + (1.0 - smoothing) * target_commands
+        target_commands[:, 0] *= speed_scale
+        target_commands[:, 2] = target_yaw
+
+        linear_smoothing = getattr(nav_cfg, "linear_command_smoothing", nav_cfg.command_smoothing)
+        yaw_smoothing = getattr(nav_cfg, "yaw_command_smoothing", nav_cfg.command_smoothing)
+        self.nav_command_buffer[:, :2] = (
+            linear_smoothing * self.nav_command_buffer[:, :2]
+            + (1.0 - linear_smoothing) * target_commands[:, :2]
+        )
+        self.nav_command_buffer[:, 2] = (
+            yaw_smoothing * self.nav_command_buffer[:, 2]
+            + (1.0 - yaw_smoothing) * target_commands[:, 2]
+        )
         self.nav_command_buffer[self.nav_reached_goal_buf] = 0.0
         self.nav_last_actions[:] = nav_actions
+        self.nav_front_clearance[:] = front_clearance
+        self.nav_path_follow_blend[:] = path_blend
+        self.nav_speed_scale[:] = speed_scale
         self.commands[:, :3] = self.nav_command_buffer
 
     def get_student_obs(self):
@@ -531,6 +621,9 @@ class rollRobotR_hierarchical_nav(rollRobotR):
             "goal_distance": float(self.nav_goal_distance[env_id].item()),
             "track_error": float(self.nav_cross_track_error[env_id].item()),
             "min_clearance": float(self.nav_min_clearance[env_id].item()),
+            "front_clearance": float(self.nav_front_clearance[env_id].item()),
+            "path_blend": float(self.nav_path_follow_blend[env_id].item()),
+            "speed_scale": float(self.nav_speed_scale[env_id].item()),
             "collision": bool(self.nav_collision_buf[env_id].item()),
             "goal_reached": bool(self.nav_reached_goal_buf[env_id].item()),
             "out_of_bounds": bool(self.nav_out_of_bounds_buf[env_id].item()),

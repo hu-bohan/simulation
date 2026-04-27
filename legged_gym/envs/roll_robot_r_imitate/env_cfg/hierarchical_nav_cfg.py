@@ -57,11 +57,28 @@ class rollRobotR_hierarchical_nav_Cfg(rollRobotR_history_imitate_Cfg):
         obstacle_margin = 0.9
         obstacle_min_spacing = 1.6
 
-        min_forward_command = 0.08
-        max_forward_command = 0.45
-        max_yaw_command = 0.35
+        min_forward_command = 0.0
+        max_forward_command = 0.38
+        max_yaw_command = 0.65
         command_smoothing = 0.8
+        linear_command_smoothing = 0.65
+        yaw_command_smoothing = 0.4
         speed_observation_scale = 0.8
+
+        path_following_enabled = True
+        path_follow_heading_gain = 1.2
+        path_follow_track_gain = 0.35
+        path_follow_policy_clearance = 0.8
+        path_follow_full_clearance = 2.2
+
+        safety_shield_enabled = True
+        safety_front_distance = 3.5
+        safety_lateral_margin = 0.35
+        safety_radius_buffer = 0.35
+        safety_stop_clearance = 0.1
+        safety_slow_clearance = 1.3
+        turn_speed_reduction = 0.35
+        min_turn_speed_scale = 0.45
 
         reward_progress = 6.0
         reward_track_recovery = 0.8
