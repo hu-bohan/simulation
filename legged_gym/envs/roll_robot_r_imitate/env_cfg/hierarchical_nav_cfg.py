@@ -57,8 +57,9 @@ class rollRobotR_hierarchical_nav_Cfg(rollRobotR_history_imitate_Cfg):
         obstacle_margin = 0.9
         obstacle_min_spacing = 1.6
 
-        max_forward_command = 0.5
-        max_yaw_command = 1.0
+        min_forward_command = 0.08
+        max_forward_command = 0.45
+        max_yaw_command = 0.35
         command_smoothing = 0.8
         speed_observation_scale = 0.8
 

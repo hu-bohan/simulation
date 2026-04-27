@@ -477,11 +477,18 @@ class rollRobotR_hierarchical_nav(rollRobotR):
 
     def apply_navigation_actions(self, nav_actions):
         nav_actions = torch.clamp(nav_actions, -1.0, 1.0).to(self.device)
+        nav_cfg = self.cfg.navigation
+        thrust_norm = (nav_actions[:, 1] + 1.0) * 0.5
         target_commands = torch.zeros(self.num_envs, 3, device=self.device, dtype=torch.float)
-        target_commands[:, 0] = (nav_actions[:, 1] + 1.0) * 0.5 * self.cfg.navigation.max_forward_command
-        target_commands[:, 2] = nav_actions[:, 0] * self.cfg.navigation.max_yaw_command
+        target_commands[:, 0] = nav_cfg.min_forward_command + thrust_norm * (
+            nav_cfg.max_forward_command - nav_cfg.min_forward_command
+        )
+        target_commands[:, 0] = torch.where(
+            thrust_norm < 0.05, torch.zeros_like(target_commands[:, 0]), target_commands[:, 0]
+        )
+        target_commands[:, 2] = nav_actions[:, 0] * nav_cfg.max_yaw_command
 
-        smoothing = self.cfg.navigation.command_smoothing
+        smoothing = nav_cfg.command_smoothing
         self.nav_command_buffer[:] = smoothing * self.nav_command_buffer + (1.0 - smoothing) * target_commands
         self.nav_command_buffer[self.nav_reached_goal_buf] = 0.0
         self.nav_last_actions[:] = nav_actions
