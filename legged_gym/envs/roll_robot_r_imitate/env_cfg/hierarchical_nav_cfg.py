@@ -81,7 +81,7 @@ class rollRobotR_hierarchical_nav_Cfg(rollRobotR_history_imitate_Cfg):
         terminate_on_body_contact = False
         terminate_on_timeout = True
         terminate_on_trap = False
-        terminate_on_collision = False
+        terminate_on_collision = True
         terminate_on_goal = True
         terminate_on_out_of_bounds = True
 

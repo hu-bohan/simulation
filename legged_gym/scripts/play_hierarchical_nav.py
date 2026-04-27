@@ -293,11 +293,13 @@ def play(args):
 
     nav_obs = env.get_nav_observations()
     max_steps = int(env.max_episode_length.item()) if hasattr(env.max_episode_length, "item") else int(env.max_episode_length)
+    last_nav_action = torch.zeros(2, device=env.device)
 
     try:
         for step in range(max_steps):
             with torch.inference_mode():
                 nav_actions = nav_policy.act(nav_obs)
+                last_nav_action = nav_actions[0].detach().clone()
                 env.apply_navigation_actions(nav_actions)
                 low_level_actions = _compose_low_level_actions(env, locomotion_policy, recovery_policy)
                 nav_obs, _, nav_rewards, nav_dones, _, _ = env.step(low_level_actions)
@@ -313,6 +315,7 @@ def play(args):
             if step % 50 == 0:
                 status = env.get_navigation_status(0)
                 command = env.nav_command_buffer[0]
+                nav_action = last_nav_action
                 print(
                     f"step={step:04d} "
                     f"x={status['local_x']:.2f} "
@@ -320,12 +323,15 @@ def play(args):
                     f"goal_dist={status['goal_distance']:.2f} "
                     f"track_err={status['track_error']:.2f} "
                     f"clearance={status['min_clearance']:.2f} "
-                    f"cmd=({command[0].item():.2f}, {command[2].item():.2f})"
+                    f"nav=(rudder={nav_action[0].item():.2f}, thrust={nav_action[1].item():.2f}) "
+                    f"cmd=(vx={command[0].item():.2f}, yaw={command[2].item():.2f})"
                 )
 
             if bool(nav_dones[0].item()):
                 status = env.get_navigation_status(0)
                 reasons = env.get_termination_status(0)
+                command = env.nav_command_buffer[0]
+                nav_action = last_nav_action
                 print(
                     "episode reset | "
                     f"goal={reasons['goal_reached']} "
@@ -334,6 +340,8 @@ def play(args):
                     f"body_contact={reasons['body_contact']} "
                     f"trap={reasons['trap']} "
                     f"timeout={reasons['timeout']} "
+                    f"nav=(rudder={nav_action[0].item():.2f}, thrust={nav_action[1].item():.2f}) "
+                    f"cmd=(vx={command[0].item():.2f}, yaw={command[2].item():.2f}) "
                     f"reward={nav_rewards[0].item():.2f}"
                 )
     finally:
