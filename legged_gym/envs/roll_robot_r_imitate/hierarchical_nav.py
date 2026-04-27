@@ -296,6 +296,16 @@ class rollRobotR_hierarchical_nav(rollRobotR):
         clearance_norm = nearest_clearance / nav_cfg.observation_radius
         radius_norm = nearest_radii / 5.0
 
+        obstacle_features = torch.stack(
+            (
+                torch.clamp(body_x, -1.0, 1.0),
+                torch.clamp(body_y, -1.0, 1.0),
+                torch.clamp(clearance_norm, -1.0, 1.0),
+                torch.clamp(radius_norm, 0.0, 1.0),
+            ),
+            dim=2,
+        ).flatten(1)
+
         nav_obs_parts = [
             torch.clamp(local_pos[:, 0] / nav_cfg.field_length, 0.0, 1.2).unsqueeze(1),
             torch.clamp(local_pos[:, 1] / nav_cfg.field_width, -0.2, 1.2).unsqueeze(1),
@@ -305,10 +315,7 @@ class rollRobotR_hierarchical_nav(rollRobotR):
             torch.clamp(cross_track / 20.0, -1.0, 1.0).unsqueeze(1),
             torch.clamp(heading_error / math.pi, -1.0, 1.0).unsqueeze(1),
             torch.clamp(goal_distance / nav_cfg.field_length, 0.0, 1.5).unsqueeze(1),
-            torch.clamp(body_x, -1.0, 1.0),
-            torch.clamp(body_y, -1.0, 1.0),
-            torch.clamp(clearance_norm, -1.0, 1.0),
-            torch.clamp(radius_norm, 0.0, 1.0),
+            obstacle_features,
         ]
 
         nav_obs = torch.cat(nav_obs_parts, dim=1)

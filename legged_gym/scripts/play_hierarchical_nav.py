@@ -274,7 +274,7 @@ def play(args):
     env_cfg.commands.trap_time = 30
     env_cfg.navigation.terminate_on_body_contact = False
     env_cfg.navigation.terminate_on_trap = False
-    env_cfg.navigation.terminate_on_collision = False
+    env_cfg.navigation.terminate_on_collision = True
 
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     env.reset()
