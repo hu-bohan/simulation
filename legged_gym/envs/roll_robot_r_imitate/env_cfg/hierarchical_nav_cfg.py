@@ -74,11 +74,12 @@ class rollRobotR_hierarchical_nav_Cfg(rollRobotR_history_imitate_Cfg):
         safety_shield_enabled = True
         safety_front_distance = 3.5
         safety_lateral_margin = 0.35
-        safety_radius_buffer = 0.35
-        safety_stop_clearance = 0.1
-        safety_slow_clearance = 1.3
+        safety_radius_buffer = 0.2
+        safety_stop_clearance = -0.05
+        safety_slow_clearance = 0.8
+        safety_min_speed_scale = 0.18
         turn_speed_reduction = 0.35
-        min_turn_speed_scale = 0.45
+        min_turn_speed_scale = 0.55
 
         reward_progress = 6.0
         reward_track_recovery = 0.8

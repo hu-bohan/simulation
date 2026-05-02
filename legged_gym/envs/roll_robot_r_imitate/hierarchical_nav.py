@@ -543,6 +543,12 @@ class rollRobotR_hierarchical_nav(rollRobotR):
                 0.0,
                 1.0,
             )
+            crawl_floor = torch.where(
+                front_clearance > nav_cfg.safety_stop_clearance,
+                torch.full_like(obstacle_speed_scale, nav_cfg.safety_min_speed_scale),
+                torch.zeros_like(obstacle_speed_scale),
+            )
+            obstacle_speed_scale = torch.maximum(obstacle_speed_scale, crawl_floor)
         else:
             obstacle_speed_scale = torch.ones_like(target_yaw)
 
@@ -567,8 +573,7 @@ class rollRobotR_hierarchical_nav(rollRobotR):
         )
         policy_yaw = nav_actions[:, 0] * nav_cfg.max_yaw_command
         front_clearance = self._compute_front_obstacle_clearance()
-        policy_clearance = torch.minimum(front_clearance, self.nav_min_clearance - nav_cfg.safety_radius_buffer)
-        target_yaw, path_blend = self._blend_path_following_yaw(policy_yaw, policy_clearance)
+        target_yaw, path_blend = self._blend_path_following_yaw(policy_yaw, front_clearance)
         speed_scale = self._compute_forward_speed_scale(target_yaw, front_clearance)
 
         target_commands[:, 0] *= speed_scale
