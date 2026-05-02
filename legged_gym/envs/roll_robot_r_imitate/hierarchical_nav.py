@@ -511,7 +511,8 @@ class rollRobotR_hierarchical_nav(rollRobotR):
         )
 
         shield_clearance = clearance - nav_cfg.safety_radius_buffer
-        far_clearance = torch.full_like(shield_clearance, nav_cfg.safety_slow_clearance + 1.0)
+        far_clearance_value = max(nav_cfg.safety_slow_clearance + 1.0, nav_cfg.path_follow_full_clearance)
+        far_clearance = torch.full_like(shield_clearance, far_clearance_value)
         front_clearance = torch.where(front_mask, shield_clearance, far_clearance).min(dim=1).values
         return front_clearance
 
@@ -577,6 +578,13 @@ class rollRobotR_hierarchical_nav(rollRobotR):
         speed_scale = self._compute_forward_speed_scale(target_yaw, front_clearance)
 
         target_commands[:, 0] *= speed_scale
+        cruise_allowed = (front_clearance > nav_cfg.cruise_clearance) & (~self.nav_reached_goal_buf)
+        cruise_command = torch.full_like(target_commands[:, 0], nav_cfg.cruise_forward_command)
+        target_commands[:, 0] = torch.where(
+            cruise_allowed,
+            torch.maximum(target_commands[:, 0], cruise_command),
+            target_commands[:, 0],
+        )
         target_commands[:, 2] = target_yaw
 
         linear_smoothing = getattr(nav_cfg, "linear_command_smoothing", nav_cfg.command_smoothing)

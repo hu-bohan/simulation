@@ -64,6 +64,8 @@ class rollRobotR_hierarchical_nav_Cfg(rollRobotR_history_imitate_Cfg):
         linear_command_smoothing = 0.65
         yaw_command_smoothing = 0.4
         speed_observation_scale = 0.8
+        cruise_forward_command = 0.12
+        cruise_clearance = 1.0
 
         path_following_enabled = True
         path_follow_heading_gain = 1.2
