@@ -22,6 +22,8 @@ VIDEO_HORIZONTAL_FOV_DEG = 75.0
 VIDEO_TRACK_ENV = 0
 VIDEO_CAMERA_OFFSET = np.array([-2.8, -1.6, 1.4], dtype=np.float32)
 VIDEO_TARGET_OFFSET = np.array([0.4, 0.0, 0.35], dtype=np.float32)
+VIDEO_GROUND_MARKER_Z = 0.025
+VIDEO_GROUND_CIRCLE_SEGMENTS = 96
 
 
 def _load_jit_policy(policy_path, device, label):
@@ -97,76 +99,74 @@ def _project_world_points(world_points, camera_pos, target_pos):
     return projected, visible, fx, fy
 
 
+def _make_ground_circle_points(center_xy, radius, z_value):
+    angles = np.linspace(0.0, 2.0 * np.pi, VIDEO_GROUND_CIRCLE_SEGMENTS + 1, dtype=np.float32)
+    return np.column_stack(
+        [
+            center_xy[0] + radius * np.cos(angles),
+            center_xy[1] + radius * np.sin(angles),
+            np.full_like(angles, z_value),
+        ]
+    ).astype(np.float32)
+
+
+def _draw_projected_polyline(frame_bgr, projected_points, visible, color, thickness):
+    for idx in range(len(projected_points) - 1):
+        if not (visible[idx] and visible[idx + 1]):
+            continue
+        p0 = projected_points[idx]
+        p1 = projected_points[idx + 1]
+        cv2.line(
+            frame_bgr,
+            (int(round(p0[0])), int(round(p0[1]))),
+            (int(round(p1[0])), int(round(p1[1]))),
+            color,
+            thickness,
+            lineType=cv2.LINE_AA,
+        )
+
+
 def _draw_navigation_overlay(frame_bgr, env, camera_pos, target_pos):
     overlay = frame_bgr.copy()
     origin = env.env_origins[VIDEO_TRACK_ENV].detach().cpu().numpy()
     path_shift_y = env.cfg.navigation.field_width * 0.5
+    ground_z = origin[2] + VIDEO_GROUND_MARKER_Z
 
     path_local = env.path_points_local.detach().cpu().numpy()[::2]
     path_world = np.column_stack(
         [
             origin[0] + path_local[:, 0],
             origin[1] + path_local[:, 1] - path_shift_y,
-            np.full(path_local.shape[0], origin[2] + 0.05, dtype=np.float32),
+            np.full(path_local.shape[0], ground_z, dtype=np.float32),
         ]
     ).astype(np.float32)
 
     projected_path, path_visible, _, _ = _project_world_points(path_world, camera_pos, target_pos)
-    for idx in range(len(projected_path) - 1):
-        if not (path_visible[idx] and path_visible[idx + 1]):
-            continue
-        p0 = projected_path[idx]
-        p1 = projected_path[idx + 1]
-        cv2.line(
-            overlay,
-            (int(round(p0[0])), int(round(p0[1]))),
-            (int(round(p1[0])), int(round(p1[1]))),
-            (255, 200, 0),
-            2,
-            lineType=cv2.LINE_AA,
-        )
+    _draw_projected_polyline(overlay, projected_path, path_visible, (255, 200, 0), 2)
 
     goal_local = env.goal_local.detach().cpu().numpy()
-    goal_world = np.array(
-        [[origin[0] + goal_local[0], origin[1] + goal_local[1] - path_shift_y, origin[2] + 0.15]],
+    goal_center_xy = np.array(
+        [origin[0] + goal_local[0], origin[1] + goal_local[1] - path_shift_y],
         dtype=np.float32,
     )
-    projected_goal, goal_visible, fx, _ = _project_world_points(goal_world, camera_pos, target_pos)
-    if goal_visible[0]:
-        goal_depth = max(projected_goal[0, 2], 0.2)
-        goal_radius = max(8, int(round(fx * env.cfg.navigation.goal_tolerance / goal_depth)))
-        goal_center = (int(round(projected_goal[0, 0])), int(round(projected_goal[0, 1])))
-        cv2.circle(overlay, goal_center, goal_radius, (0, 220, 0), 2, lineType=cv2.LINE_AA)
-        cv2.putText(
-            overlay,
-            "goal",
-            (goal_center[0] + 8, goal_center[1] - 8),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 220, 0),
-            1,
-            cv2.LINE_AA,
-        )
+    goal_ground = _make_ground_circle_points(goal_center_xy, env.cfg.navigation.goal_tolerance, ground_z)
+    projected_goal, goal_visible, _, _ = _project_world_points(goal_ground, camera_pos, target_pos)
+    _draw_projected_polyline(overlay, projected_goal, goal_visible, (0, 220, 0), 3)
 
     obstacle_local = env.obstacle_positions[VIDEO_TRACK_ENV].detach().cpu().numpy()
     obstacle_radii = env.obstacle_radii[VIDEO_TRACK_ENV].detach().cpu().numpy()
-    obstacle_world = np.column_stack(
-        [
-            origin[0] + obstacle_local[:, 0],
-            origin[1] + obstacle_local[:, 1] - path_shift_y,
-            np.full(obstacle_local.shape[0], origin[2] + 0.12, dtype=np.float32),
-        ]
-    ).astype(np.float32)
-    projected_obstacles, obstacle_visible, fx, _ = _project_world_points(
-        obstacle_world, camera_pos, target_pos
-    )
     for idx, radius in enumerate(obstacle_radii):
-        if radius <= 0.0 or not obstacle_visible[idx]:
+        if radius <= 0.0:
             continue
-        depth = max(projected_obstacles[idx, 2], 0.2)
-        pixel_radius = max(6, int(round(fx * radius / depth)))
-        center = (int(round(projected_obstacles[idx, 0])), int(round(projected_obstacles[idx, 1])))
-        cv2.circle(overlay, center, pixel_radius, (0, 0, 255), 2, lineType=cv2.LINE_AA)
+        obstacle_center_xy = np.array(
+            [origin[0] + obstacle_local[idx, 0], origin[1] + obstacle_local[idx, 1] - path_shift_y],
+            dtype=np.float32,
+        )
+        obstacle_ground = _make_ground_circle_points(obstacle_center_xy, radius, ground_z)
+        projected_obstacle, obstacle_visible = _project_world_points(
+            obstacle_ground, camera_pos, target_pos
+        )[:2]
+        _draw_projected_polyline(overlay, projected_obstacle, obstacle_visible, (0, 0, 255), 3)
 
     cv2.putText(
         overlay,
