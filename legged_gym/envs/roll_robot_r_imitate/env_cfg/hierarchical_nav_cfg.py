@@ -83,6 +83,14 @@ class rollRobotR_hierarchical_nav_Cfg(rollRobotR_history_imitate_Cfg):
         turn_speed_reduction = 0.35
         min_turn_speed_scale = 0.55
 
+        use_terrain_mesh_obstacles = False
+        terrain_obstacle_seed = 12345
+        terrain_obstacle_height = 0.8
+        terrain_obstacle_segments = 24
+        terrain_nav_start_margin = 2.0
+        terrain_nav_end_margin = 2.0
+        terrain_nav_side_margin = 2.0
+
         reward_progress = 6.0
         reward_track_recovery = 0.8
         penalty_track = 0.08

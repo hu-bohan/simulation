@@ -16,6 +16,27 @@ class rollRobotR_hierarchical_nav(rollRobotR):
     def __init__(self, cfg, sim_params, physics_engine, sim_device, headless):
         super().__init__(cfg, sim_params, physics_engine, sim_device, headless)
 
+    def create_sim(self):
+        if not getattr(self.cfg.navigation, "use_terrain_mesh_obstacles", False):
+            super().create_sim()
+            return
+
+        if self.cfg.terrain.mesh_type != "trimesh":
+            raise ValueError("navigation.use_terrain_mesh_obstacles requires terrain.mesh_type='trimesh'")
+
+        from legged_gym.utils.nav_terrain_mesh import NavigationObstacleTerrain
+
+        self.up_axis_idx = 2
+        self.sim = self.gym.create_sim(
+            self.sim_device_id,
+            self.graphics_device_id,
+            self.physics_engine,
+            self.sim_params,
+        )
+        self.terrain = NavigationObstacleTerrain(self.cfg.terrain, self.cfg.navigation, self.num_envs)
+        self._create_trimesh()
+        self._create_envs()
+
     def _prepare_reward_function(self):
         self.reward_functions = []
         self.reward_names = [
@@ -232,13 +253,29 @@ class rollRobotR_hierarchical_nav(rollRobotR):
         radii = np.array([item[1] for item in obstacles], dtype=np.float32)
         return positions, radii
 
+    def _using_terrain_mesh_obstacles(self):
+        if not getattr(self.cfg.navigation, "use_terrain_mesh_obstacles", False):
+            return False
+        if not hasattr(self, "terrain") or not hasattr(self.terrain, "get_obstacles"):
+            raise RuntimeError("Terrain obstacle mode is enabled, but the terrain layout is unavailable.")
+        return True
+
+    def _terrain_obstacle_layout_for_env(self, env_id):
+        row = int(self.terrain_levels[env_id].item()) if hasattr(self, "terrain_levels") else 0
+        col = int(self.terrain_types[env_id].item()) if hasattr(self, "terrain_types") else 0
+        return self.terrain.get_obstacles(row, col)
+
     def _reset_navigation_task(self, env_ids):
         if len(env_ids) == 0:
             return
 
         env_ids_cpu = env_ids.detach().cpu().tolist()
+        use_terrain_obstacles = self._using_terrain_mesh_obstacles()
         for env_id in env_ids_cpu:
-            positions, radii = self._sample_obstacles_for_env()
+            if use_terrain_obstacles:
+                positions, radii = self._terrain_obstacle_layout_for_env(env_id)
+            else:
+                positions, radii = self._sample_obstacles_for_env()
             self.obstacle_positions[env_id] = torch.as_tensor(positions, device=self.device, dtype=torch.float)
             self.obstacle_radii[env_id] = torch.as_tensor(radii, device=self.device, dtype=torch.float)
 
