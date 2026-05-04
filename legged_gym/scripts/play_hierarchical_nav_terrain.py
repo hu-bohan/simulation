@@ -64,7 +64,11 @@ def play(args):
     recovery_policy = _load_jit_policy(env_cfg.navigation.recovery_policy_path, env.device, "Recovery")
     nav_policy, _ = load_navigation_policy(env_cfg.navigation.nav_policy_path, env.device)
 
-    print("terrain obstacle mode: static trimesh obstacles are synced into navigation observations")
+    terrain_seed = getattr(getattr(env, "terrain", None), "obstacle_seed", None)
+    print(
+        "terrain obstacle mode: static trimesh obstacles are synced into navigation observations | "
+        f"seed={terrain_seed}"
+    )
 
     nav_obs = env.get_nav_observations()
     max_steps = int(env.max_episode_length.item()) if hasattr(env.max_episode_length, "item") else int(env.max_episode_length)

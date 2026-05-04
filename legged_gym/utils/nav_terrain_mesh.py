@@ -48,6 +48,7 @@ class NavigationObstacleTerrain:
             (self.num_rows, self.num_cols, navigation_cfg.num_obstacles),
             dtype=np.float32,
         )
+        self.obstacle_seed = self._resolve_obstacle_seed()
         self._build_obstacle_layouts()
         self.vertices, self.triangles = self._build_mesh()
 
@@ -72,13 +73,18 @@ class NavigationObstacleTerrain:
         return origins
 
     def _build_obstacle_layouts(self):
-        base_seed = int(getattr(self.nav_cfg, "terrain_obstacle_seed", 12345))
         for row in range(self.num_rows):
             for col in range(self.num_cols):
-                rng = np.random.default_rng(base_seed + row * self.num_cols + col)
+                rng = np.random.default_rng(self.obstacle_seed + row * self.num_cols + col)
                 positions, radii = self._sample_obstacles(rng)
                 self.nav_obstacle_positions[row, col] = positions
                 self.nav_obstacle_radii[row, col] = radii
+
+    def _resolve_obstacle_seed(self):
+        seed = getattr(self.nav_cfg, "terrain_obstacle_seed", None)
+        if seed is None or int(seed) < 0:
+            return int(np.random.default_rng().integers(0, np.iinfo(np.int32).max))
+        return int(seed)
 
     def _sample_obstacles(self, rng):
         fixed_layout = self._fixed_obstacle_layout()
