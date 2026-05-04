@@ -90,6 +90,7 @@ class rollRobotR_hierarchical_nav_Cfg(rollRobotR_history_imitate_Cfg):
         terrain_nav_start_margin = 2.0
         terrain_nav_end_margin = 2.0
         terrain_nav_side_margin = 2.0
+        terrain_obstacle_layout = None
 
         reward_progress = 6.0
         reward_track_recovery = 0.8

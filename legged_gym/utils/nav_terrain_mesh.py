@@ -81,6 +81,10 @@ class NavigationObstacleTerrain:
                 self.nav_obstacle_radii[row, col] = radii
 
     def _sample_obstacles(self, rng):
+        fixed_layout = self._fixed_obstacle_layout()
+        if fixed_layout is not None:
+            return fixed_layout
+
         nav_cfg = self.nav_cfg
         obstacles = []
         start_xy = np.array([0.0, nav_cfg.path_center_y], dtype=np.float32)
@@ -132,6 +136,32 @@ class NavigationObstacleTerrain:
 
         positions = np.stack([item[0] for item in obstacles], axis=0).astype(np.float32)
         radii = np.array([item[1] for item in obstacles], dtype=np.float32)
+        return positions, radii
+
+    def _fixed_obstacle_layout(self):
+        layout = getattr(self.nav_cfg, "terrain_obstacle_layout", None)
+        if layout is None:
+            return None
+
+        entries = np.asarray(layout, dtype=np.float32)
+        if entries.size == 0:
+            entries = np.zeros((0, 3), dtype=np.float32)
+        elif entries.ndim == 1:
+            entries = entries.reshape(1, -1)
+
+        if entries.ndim != 2 or entries.shape[1] != 3:
+            raise ValueError("navigation.terrain_obstacle_layout must contain [x, y, radius] rows")
+
+        positions = np.full((self.nav_cfg.num_obstacles, 2), -100.0, dtype=np.float32)
+        radii = np.zeros((self.nav_cfg.num_obstacles,), dtype=np.float32)
+
+        count = min(self.nav_cfg.num_obstacles, entries.shape[0])
+        for idx in range(count):
+            x_pos, y_pos, radius = entries[idx]
+            if radius <= 0.0:
+                continue
+            positions[idx] = [x_pos, y_pos]
+            radii[idx] = radius
         return positions, radii
 
     def _path_y_at_x(self, x_value):

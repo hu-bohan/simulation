@@ -10,17 +10,21 @@ from legged_gym.scripts.play_hierarchical_nav import (
     _load_jit_policy,
     _write_video_frame,
 )
-from legged_gym.utils.nav_policy_loader import load_navigation_policy
 from legged_gym.utils.task_registry import get_args, task_registry
 
 
-def _configure_terrain_obstacle_demo(env_cfg):
+PROBE_FORWARD_COMMAND = 0.25
+PROBE_OBSTACLE_X = 3.5
+PROBE_OBSTACLE_RADIUS = 1.0
+
+
+def _configure_collision_probe(env_cfg):
     nav_cfg = env_cfg.navigation
 
     env_cfg.env.num_envs = 1
     env_cfg.env.is_train = True
     env_cfg.env.enable_camera_sensors = CREATE_VIDEO
-    env_cfg.env.episode_length_s = 180
+    env_cfg.env.episode_length_s = 30
 
     env_cfg.terrain.mesh_type = "trimesh"
     env_cfg.terrain.curriculum = False
@@ -38,46 +42,63 @@ def _configure_terrain_obstacle_demo(env_cfg):
     )
 
     env_cfg.commands.curriculum = False
-    env_cfg.commands.trap_time = 30
+    env_cfg.commands.trap_time = 1000
+
     nav_cfg.use_terrain_mesh_obstacles = True
+    nav_cfg.path_type = "line"
+    nav_cfg.terrain_obstacle_height = 1.2
+    nav_cfg.terrain_obstacle_layout = [
+        [PROBE_OBSTACLE_X, nav_cfg.path_center_y, PROBE_OBSTACLE_RADIUS],
+    ]
+
     nav_cfg.terminate_on_body_contact = False
     nav_cfg.terminate_on_trap = False
-    nav_cfg.terminate_on_collision = True
+    nav_cfg.terminate_on_collision = False
+    nav_cfg.terminate_on_goal = False
+    nav_cfg.terminate_on_out_of_bounds = False
+
+
+def _apply_probe_command(env):
+    env.nav_command_buffer[:, :] = 0.0
+    env.nav_command_buffer[:, 0] = PROBE_FORWARD_COMMAND
+    env.commands[:, :3] = env.nav_command_buffer
 
 
 def play(args):
     env_cfg, _ = task_registry.get_cfgs(name=args.task)
-    _configure_terrain_obstacle_demo(env_cfg)
+    _configure_collision_probe(env_cfg)
 
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     env.reset()
+    _apply_probe_command(env)
+    env.compute_observations()
+
+    obstacle_pos = env.obstacle_positions[0, 0].detach().cpu().numpy()
+    obstacle_radius = env.obstacle_radii[0, 0].item()
+    print(
+        "collision probe: fixed forward command, navigation policy disabled | "
+        f"obstacle=(x={obstacle_pos[0]:.2f}, y={obstacle_pos[1]:.2f}, r={obstacle_radius:.2f})"
+    )
 
     video_writer = None
     video_path = None
     camera_handle = None
     if CREATE_VIDEO:
         camera_handle, video_writer, video_path = _create_video_recorder(
-            env, "roll_robot_r_hierarchical_nav_terrain"
+            env, "roll_robot_r_hierarchical_nav_collision_probe"
         )
 
     locomotion_policy = _load_jit_policy(env_cfg.navigation.locomotion_policy_path, env.device, "Locomotion")
     recovery_policy = _load_jit_policy(env_cfg.navigation.recovery_policy_path, env.device, "Recovery")
-    nav_policy, _ = load_navigation_policy(env_cfg.navigation.nav_policy_path, env.device)
 
-    print("terrain obstacle mode: static trimesh obstacles are synced into navigation observations")
-
-    nav_obs = env.get_nav_observations()
     max_steps = int(env.max_episode_length.item()) if hasattr(env.max_episode_length, "item") else int(env.max_episode_length)
-    last_nav_action = torch.zeros(2, device=env.device)
 
     try:
         for step in range(max_steps):
             with torch.inference_mode():
-                nav_actions = nav_policy.act(nav_obs)
-                last_nav_action = nav_actions[0].detach().clone()
-                env.apply_navigation_actions(nav_actions)
+                _apply_probe_command(env)
                 low_level_actions = _compose_low_level_actions(env, locomotion_policy, recovery_policy)
-                nav_obs, _, nav_rewards, nav_dones, _, _ = env.step(low_level_actions)
+                _, _, _, _, _, _ = env.step(low_level_actions)
 
             if (
                 video_writer is not None
@@ -87,43 +108,17 @@ def play(args):
                 frame_bgr = _write_video_frame(env, camera_handle)
                 video_writer.write(frame_bgr)
 
-            if step % 50 == 0:
+            if step % 25 == 0:
                 status = env.get_navigation_status(0)
-                command = env.nav_command_buffer[0]
-                nav_action = last_nav_action
+                speed = torch.norm(env.base_lin_vel[0, :2]).item()
                 print(
                     f"step={step:04d} "
                     f"x={status['local_x']:.2f} "
                     f"y={status['local_y']:.2f} "
-                    f"goal_dist={status['goal_distance']:.2f} "
-                    f"track_err={status['track_error']:.2f} "
                     f"clearance={status['min_clearance']:.2f} "
-                    f"front={status['front_clearance']:.2f} "
-                    f"blend={status['path_blend']:.2f} "
-                    f"speed_scale={status['speed_scale']:.2f} "
-                    f"nav=(rudder={nav_action[0].item():.2f}, thrust={nav_action[1].item():.2f}) "
-                    f"cmd=(vx={command[0].item():.2f}, yaw={command[2].item():.2f})"
-                )
-
-            if bool(nav_dones[0].item()):
-                status = env.get_navigation_status(0)
-                reasons = env.get_termination_status(0)
-                command = env.nav_command_buffer[0]
-                nav_action = last_nav_action
-                print(
-                    "episode reset | "
-                    f"goal={reasons['goal_reached']} "
-                    f"collision={reasons['collision']} "
-                    f"out_of_bounds={reasons['out_of_bounds']} "
-                    f"body_contact={reasons['body_contact']} "
-                    f"trap={reasons['trap']} "
-                    f"timeout={reasons['timeout']} "
-                    f"front={status['front_clearance']:.2f} "
-                    f"blend={status['path_blend']:.2f} "
-                    f"speed_scale={status['speed_scale']:.2f} "
-                    f"nav=(rudder={nav_action[0].item():.2f}, thrust={nav_action[1].item():.2f}) "
-                    f"cmd=(vx={command[0].item():.2f}, yaw={command[2].item():.2f}) "
-                    f"reward={nav_rewards[0].item():.2f}"
+                    f"logic_collision={status['collision']} "
+                    f"speed={speed:.2f} "
+                    f"cmd_vx={env.commands[0, 0].item():.2f}"
                 )
     finally:
         if video_writer is not None:
