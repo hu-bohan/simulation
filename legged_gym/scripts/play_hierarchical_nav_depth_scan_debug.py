@@ -4,7 +4,14 @@ import torch
 from isaacgym import gymapi
 
 from legged_gym.envs import *  # noqa: F401,F403
-from legged_gym.scripts.play_hierarchical_nav import _compose_low_level_actions, _load_jit_policy
+from legged_gym.scripts.play_hierarchical_nav import (
+    CREATE_VIDEO,
+    VIDEO_FRAME_STRIDE,
+    _compose_low_level_actions,
+    _create_video_recorder,
+    _load_jit_policy,
+    _write_video_frame,
+)
 from legged_gym.scripts.play_hierarchical_nav_terrain import _configure_terrain_obstacle_demo
 from legged_gym.utils.nav_depth_scan import DepthScanConfig, NavDepthScanner
 from legged_gym.utils.nav_policy_loader import load_navigation_policy
@@ -133,6 +140,14 @@ def play(args):
     scanner = NavDepthScanner(scanner_config)
     depth_camera = _create_depth_camera(env, scanner_config)
 
+    video_writer = None
+    video_path = None
+    video_camera = None
+    if CREATE_VIDEO:
+        video_camera, video_writer, video_path = _create_video_recorder(
+            env, "roll_robot_r_hierarchical_nav_depth_scan_debug"
+        )
+
     locomotion_policy = _load_jit_policy(env_cfg.navigation.locomotion_policy_path, env.device, "Locomotion")
     recovery_policy = _load_jit_policy(env_cfg.navigation.recovery_policy_path, env.device, "Recovery")
     nav_policy, _ = load_navigation_policy(env_cfg.navigation.nav_policy_path, env.device)
@@ -145,49 +160,62 @@ def play(args):
     nav_obs = env.get_nav_observations()
     max_steps = int(env.max_episode_length.item()) if hasattr(env.max_episode_length, "item") else int(env.max_episode_length)
 
-    for step in range(max_steps):
-        with torch.inference_mode():
-            nav_actions = nav_policy.act(nav_obs)
-            env.apply_navigation_actions(nav_actions)
-            low_level_actions = _compose_low_level_actions(env, locomotion_policy, recovery_policy)
-            nav_obs, _, _, nav_dones, _, _ = env.step(low_level_actions)
+    try:
+        for step in range(max_steps):
+            with torch.inference_mode():
+                nav_actions = nav_policy.act(nav_obs)
+                env.apply_navigation_actions(nav_actions)
+                low_level_actions = _compose_low_level_actions(env, locomotion_policy, recovery_policy)
+                nav_obs, _, _, nav_dones, _, _ = env.step(low_level_actions)
 
-        if step % SCAN_PRINT_STRIDE == 0:
-            depth_image = _read_depth_image(env, depth_camera, scanner_config)
-            camera_pos, camera_forward, camera_right, camera_up = _attached_camera_frame(env)
-            ground_height = float(env.env_origins[SCAN_TRACK_ENV, 2].item())
-            camera_scan = scanner.compute(
-                "camera",
-                depth_image=depth_image,
-                camera_position=camera_pos,
-                camera_forward=camera_forward,
-                camera_right=camera_right,
-                camera_up=camera_up,
-                ground_height=ground_height,
-            )
-            oracle_scan = _compute_oracle_scan(env, scanner)
+            if (
+                video_writer is not None
+                and video_camera is not None
+                and step % VIDEO_FRAME_STRIDE == 0
+            ):
+                frame_bgr = _write_video_frame(env, video_camera)
+                video_writer.write(frame_bgr)
 
-            camera_summary = scanner.summarize(camera_scan)
-            oracle_summary = scanner.summarize(oracle_scan)
-            status = env.get_navigation_status(SCAN_TRACK_ENV)
-            print(
-                f"step={step:04d} "
-                f"x={status['local_x']:.2f} "
-                f"y={status['local_y']:.2f} "
-                f"cam_z={camera_pos[2]:.2f} "
-                f"{_format_summary('camera', camera_summary)} | "
-                f"{_format_summary('oracle', oracle_summary)}"
-            )
+            if step % SCAN_PRINT_STRIDE == 0:
+                depth_image = _read_depth_image(env, depth_camera, scanner_config)
+                camera_pos, camera_forward, camera_right, camera_up = _attached_camera_frame(env)
+                ground_height = float(env.env_origins[SCAN_TRACK_ENV, 2].item())
+                camera_scan = scanner.compute(
+                    "camera",
+                    depth_image=depth_image,
+                    camera_position=camera_pos,
+                    camera_forward=camera_forward,
+                    camera_right=camera_right,
+                    camera_up=camera_up,
+                    ground_height=ground_height,
+                )
+                oracle_scan = _compute_oracle_scan(env, scanner)
 
-        if bool(nav_dones[SCAN_TRACK_ENV].item()):
-            reasons = env.get_termination_status(SCAN_TRACK_ENV)
-            print(
-                "episode reset | "
-                f"goal={reasons['goal_reached']} "
-                f"collision={reasons['collision']} "
-                f"out_of_bounds={reasons['out_of_bounds']} "
-                f"timeout={reasons['timeout']}"
-            )
+                camera_summary = scanner.summarize(camera_scan)
+                oracle_summary = scanner.summarize(oracle_scan)
+                status = env.get_navigation_status(SCAN_TRACK_ENV)
+                print(
+                    f"step={step:04d} "
+                    f"x={status['local_x']:.2f} "
+                    f"y={status['local_y']:.2f} "
+                    f"cam_z={camera_pos[2]:.2f} "
+                    f"{_format_summary('camera', camera_summary)} | "
+                    f"{_format_summary('oracle', oracle_summary)}"
+                )
+
+            if bool(nav_dones[SCAN_TRACK_ENV].item()):
+                reasons = env.get_termination_status(SCAN_TRACK_ENV)
+                print(
+                    "episode reset | "
+                    f"goal={reasons['goal_reached']} "
+                    f"collision={reasons['collision']} "
+                    f"out_of_bounds={reasons['out_of_bounds']} "
+                    f"timeout={reasons['timeout']}"
+                )
+    finally:
+        if video_writer is not None:
+            video_writer.release()
+            print(f"video saved to: {video_path}")
 
 
 if __name__ == "__main__":
