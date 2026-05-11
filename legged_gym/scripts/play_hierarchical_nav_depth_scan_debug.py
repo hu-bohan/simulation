@@ -13,9 +13,9 @@ from legged_gym.utils.task_registry import get_args, task_registry
 
 SCAN_PRINT_STRIDE = 50
 SCAN_TRACK_ENV = 0
-CAMERA_FORWARD_OFFSET = 0.35
-CAMERA_UP_OFFSET = 0.35
-CAMERA_PITCH_TARGET_DROP = 0.08
+CAMERA_MOUNT_BODY = "base_link"
+CAMERA_LOCAL_POSITION = np.array([0.23, 0.0, 0.16], dtype=np.float32)
+CAMERA_MOUNT_PITCH_DEG = 0.0
 
 
 def _create_depth_camera(env, scanner_config):
@@ -26,30 +26,62 @@ def _create_depth_camera(env, scanner_config):
     camera_handle = env.gym.create_camera_sensor(env.envs[SCAN_TRACK_ENV], camera_props)
     if camera_handle == -1:
         raise RuntimeError("Failed to create depth camera sensor.")
+
+    body_handle = env.gym.find_actor_rigid_body_handle(
+        env.envs[SCAN_TRACK_ENV],
+        env.actor_handles[SCAN_TRACK_ENV],
+        CAMERA_MOUNT_BODY,
+    )
+    if body_handle == -1:
+        raise RuntimeError(f"Camera mount body not found: {CAMERA_MOUNT_BODY}")
+
+    local_transform = gymapi.Transform()
+    local_transform.p = gymapi.Vec3(
+        float(CAMERA_LOCAL_POSITION[0]),
+        float(CAMERA_LOCAL_POSITION[1]),
+        float(CAMERA_LOCAL_POSITION[2]),
+    )
+    local_transform.r = gymapi.Quat.from_axis_angle(
+        gymapi.Vec3(0.0, 1.0, 0.0),
+        float(np.deg2rad(CAMERA_MOUNT_PITCH_DEG)),
+    )
+    env.gym.attach_camera_to_body(
+        camera_handle,
+        env.envs[SCAN_TRACK_ENV],
+        body_handle,
+        local_transform,
+        gymapi.FOLLOW_TRANSFORM,
+    )
     return camera_handle
 
 
-def _camera_pose_from_robot(env):
-    root_pos = env.root_states[SCAN_TRACK_ENV, :3].detach().cpu().numpy()
-    heading = float(env.nav_heading[SCAN_TRACK_ENV].item())
-    forward = np.array([np.cos(heading), np.sin(heading), 0.0], dtype=np.float32)
+def _quat_rotate(quat_xyzw, vector):
+    quat = np.asarray(quat_xyzw, dtype=np.float32)
+    vector = np.asarray(vector, dtype=np.float32)
+    xyz = quat[:3]
+    w = quat[3]
+    uv = np.cross(xyz, vector)
+    uuv = np.cross(xyz, uv)
+    return vector + 2.0 * (w * uv + uuv)
 
-    camera_pos = root_pos + CAMERA_FORWARD_OFFSET * forward
-    camera_pos[2] += CAMERA_UP_OFFSET
-    target_pos = camera_pos + forward
-    target_pos[2] -= CAMERA_PITCH_TARGET_DROP
-    return camera_pos.astype(np.float32), target_pos.astype(np.float32)
+
+def _attached_camera_frame(env):
+    root_pos = env.root_states[SCAN_TRACK_ENV, :3].detach().cpu().numpy()
+    root_quat = env.root_states[SCAN_TRACK_ENV, 3:7].detach().cpu().numpy()
+
+    pitch = float(np.deg2rad(CAMERA_MOUNT_PITCH_DEG))
+    local_forward = np.array([np.cos(pitch), 0.0, -np.sin(pitch)], dtype=np.float32)
+    local_right = np.array([0.0, -1.0, 0.0], dtype=np.float32)
+    local_up = np.array([np.sin(pitch), 0.0, np.cos(pitch)], dtype=np.float32)
+
+    camera_pos = root_pos + _quat_rotate(root_quat, CAMERA_LOCAL_POSITION)
+    camera_forward = _quat_rotate(root_quat, local_forward)
+    camera_right = _quat_rotate(root_quat, local_right)
+    camera_up = _quat_rotate(root_quat, local_up)
+    return camera_pos.astype(np.float32), camera_forward, camera_right, camera_up
 
 
 def _read_depth_image(env, camera_handle, scanner_config):
-    camera_pos, target_pos = _camera_pose_from_robot(env)
-    env.gym.set_camera_location(
-        camera_handle,
-        env.envs[SCAN_TRACK_ENV],
-        gymapi.Vec3(float(camera_pos[0]), float(camera_pos[1]), float(camera_pos[2])),
-        gymapi.Vec3(float(target_pos[0]), float(target_pos[1]), float(target_pos[2])),
-    )
-
     if env.device != "cpu":
         env.gym.fetch_results(env.sim, True)
     env.gym.step_graphics(env.sim)
@@ -122,7 +154,17 @@ def play(args):
 
         if step % SCAN_PRINT_STRIDE == 0:
             depth_image = _read_depth_image(env, depth_camera, scanner_config)
-            camera_scan = scanner.compute("camera", depth_image=depth_image)
+            camera_pos, camera_forward, camera_right, camera_up = _attached_camera_frame(env)
+            ground_height = float(env.env_origins[SCAN_TRACK_ENV, 2].item())
+            camera_scan = scanner.compute(
+                "camera",
+                depth_image=depth_image,
+                camera_position=camera_pos,
+                camera_forward=camera_forward,
+                camera_right=camera_right,
+                camera_up=camera_up,
+                ground_height=ground_height,
+            )
             oracle_scan = _compute_oracle_scan(env, scanner)
 
             camera_summary = scanner.summarize(camera_scan)
@@ -132,6 +174,7 @@ def play(args):
                 f"step={step:04d} "
                 f"x={status['local_x']:.2f} "
                 f"y={status['local_y']:.2f} "
+                f"cam_z={camera_pos[2]:.2f} "
                 f"{_format_summary('camera', camera_summary)} | "
                 f"{_format_summary('oracle', oracle_summary)}"
             )

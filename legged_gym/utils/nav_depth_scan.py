@@ -15,6 +15,8 @@ class DepthScanConfig:
     camera_height: int = 480
     percentile: float = 10.0
     min_points_per_bin: int = 8
+    ground_filter_min_height: float = 0.08
+    ground_filter_max_height: float = 2.0
     front_angle_deg: float = 15.0
     side_min_angle_deg: float = 20.0
     band_row_ranges: tuple = (
@@ -83,7 +85,15 @@ class NavDepthScanner:
 
         return np.repeat(scan_1d[None, :], cfg.num_bands, axis=0)
 
-    def compute_camera(self, depth_image):
+    def compute_camera(
+        self,
+        depth_image,
+        camera_position=None,
+        camera_forward=None,
+        camera_right=None,
+        camera_up=None,
+        ground_height=None,
+    ):
         depth = self._prepare_depth_image(depth_image)
         cfg = self.config
 
@@ -93,6 +103,14 @@ class NavDepthScanner:
         scan = np.full((cfg.num_bands, cfg.num_rays), cfg.max_depth, dtype=np.float32)
 
         valid_depth = np.isfinite(depth) & (depth >= cfg.min_depth) & (depth <= cfg.max_depth)
+        valid_depth &= self._ground_filter_mask(
+            depth,
+            camera_position,
+            camera_forward,
+            camera_right,
+            camera_up,
+            ground_height,
+        )
         depth = np.where(valid_depth, depth, np.nan)
 
         for band_idx, (row_start_fraction, row_end_fraction) in enumerate(cfg.band_row_ranges):
@@ -154,7 +172,56 @@ class NavDepthScanner:
         focal_x = width / (2.0 * math.tan(half_fov))
         center_x = (width - 1) * 0.5
         pixel_x = np.arange(width, dtype=np.float32)
-        return np.arctan((pixel_x - center_x) / focal_x)
+        return -np.arctan((pixel_x - center_x) / focal_x)
+
+    def _ground_filter_mask(
+        self,
+        depth,
+        camera_position,
+        camera_forward,
+        camera_right,
+        camera_up,
+        ground_height,
+    ):
+        if (
+            camera_position is None
+            or camera_forward is None
+            or camera_right is None
+            or camera_up is None
+            or ground_height is None
+        ):
+            return np.ones_like(depth, dtype=bool)
+
+        cfg = self.config
+        height, width = depth.shape
+        camera_position = np.asarray(camera_position, dtype=np.float32)
+        camera_forward = self._normalize(np.asarray(camera_forward, dtype=np.float32))
+        camera_right = self._normalize(np.asarray(camera_right, dtype=np.float32))
+        camera_up = self._normalize(np.asarray(camera_up, dtype=np.float32))
+
+        h_fov = math.radians(cfg.horizontal_fov_deg)
+        v_fov = math.radians(cfg.vertical_fov_deg)
+        focal_x = width / (2.0 * math.tan(h_fov * 0.5))
+        focal_y = height / (2.0 * math.tan(v_fov * 0.5))
+        center_x = (width - 1) * 0.5
+        center_y = (height - 1) * 0.5
+
+        pixel_x = np.arange(width, dtype=np.float32)
+        pixel_y = np.arange(height, dtype=np.float32)
+        right_tan = (pixel_x - center_x) / focal_x
+        up_tan = (center_y - pixel_y) / focal_y
+
+        ray_z = (
+            camera_forward[2]
+            + up_tan[:, None] * camera_up[2]
+            + right_tan[None, :] * camera_right[2]
+        )
+        point_z = camera_position[2] + depth * ray_z
+        height_above_ground = point_z - float(ground_height)
+        return (
+            (height_above_ground >= cfg.ground_filter_min_height)
+            & (height_above_ground <= cfg.ground_filter_max_height)
+        )
 
     def _ray_edges(self):
         angles = self.config.ray_angles.astype(np.float32)
@@ -190,3 +257,10 @@ class NavDepthScanner:
         if not np.any(mask):
             return float("nan")
         return float(np.min(values[mask]))
+
+    @staticmethod
+    def _normalize(vector):
+        norm = np.linalg.norm(vector)
+        if norm < 1e-6:
+            return vector
+        return vector / norm
