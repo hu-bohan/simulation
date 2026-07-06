@@ -117,3 +117,37 @@ class rollRobotR_hierarchical_nav_Cfg(rollRobotR_history_imitate_Cfg):
         locomotion_policy_path = "logs/locomotion.pt"
         recovery_policy_path = "logs/recovery.pt"
         nav_policy_path = "logs/nav/td3_ship_best_actor.pt"
+
+        class depth_camera:
+            enabled = False
+
+            mount_body = "base_link"
+            local_position = [0.23, 0.0, 0.16]
+            roll_deg = 0.0
+            pitch_deg = 0.0
+            yaw_deg = 0.0
+
+            width = 848
+            height = 480
+            horizontal_fov_deg = 87.0
+            vertical_fov_deg = 58.0
+            min_depth = 0.28
+            max_depth = 6.0
+
+            num_rays = 61
+            front_angle_deg = 15.0
+            side_min_angle_deg = 20.0
+            percentile = 10.0
+            min_points_per_bin = 8
+            band_row_ranges = (
+                (0.58, 0.88),
+                (0.36, 0.66),
+                (0.14, 0.44),
+            )
+
+            ground_filter_min_height = 0.08
+            ground_filter_max_height = 2.0
+
+            cluster_percentile = 15.0
+            max_cluster_gap_rays = 1
+            min_cluster_rays = 2

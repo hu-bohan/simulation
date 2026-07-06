@@ -1,0 +1,105 @@
+# Project Context For Future Agents
+
+Read this file before working in this repository. Keep it limited to global
+context that should remain true across sessions. Put changing plans, handoffs,
+PRDs, and task progress in `docs/` or `.scratch/` instead.
+
+## Project Identity
+
+This repository is an Isaac Gym based simulation project for a rolling/legged
+robot.
+
+The project uses trained neural policies:
+
+- Low-level locomotion policy: `logs/locomotion.pt`
+- Low-level recovery policy: `logs/recovery.pt`
+- Upper-level navigation policy: `logs/nav/td3_ship_best_actor.pt`
+
+The main engineering direction is sim2real-oriented hierarchical navigation:
+connect simulated/real Intel RealSense D435 depth camera perception to the
+upper-level navigation policy while preserving the trained policy interfaces
+unless the user explicitly decides otherwise.
+
+## Local Machine Constraint
+
+The current machine is not expected to run Isaac Gym successfully because its
+GPU is insufficient. Do not treat local Isaac Gym import or runtime failures as
+evidence that the project is broken.
+
+Use this machine for:
+
+- code editing
+- static inspection
+- documentation
+- pure Python checks that do not require Isaac Gym
+- Torch checkpoint inspection
+
+Isaac Gym simulation validation is expected to happen on another machine.
+
+## Local Python Environment
+
+The local venv for this project is:
+
+`/home/hubohan/prp/easy_simulation/venv`
+
+Use it directly when needed:
+
+`/home/hubohan/prp/easy_simulation/venv/bin/python`
+
+Known local limitations:
+
+- CPU Torch is available.
+- `isaacgym` is not available.
+- `cv2` is not available.
+
+## Stable Code Landmarks
+
+Main task registration:
+
+- `legged_gym/envs/__init__.py`
+
+Core hierarchical navigation environment:
+
+- `legged_gym/envs/roll_robot_r_imitate/hierarchical_nav.py`
+
+Hierarchical navigation config:
+
+- `legged_gym/envs/roll_robot_r_imitate/env_cfg/hierarchical_nav_cfg.py`
+
+Navigation policy loader:
+
+- `legged_gym/utils/nav_policy_loader.py`
+
+Depth camera adapter utilities:
+
+- `legged_gym/utils/nav_depth_scan.py`
+- `legged_gym/utils/nav_depth_observation.py`
+
+Representative play/demo scripts live under:
+
+- `legged_gym/scripts/`
+
+## Navigation Policy Interface
+
+The upper-level navigation policy uses the existing 24D navigation observation
+interface:
+
+- first 8 values: robot/path/navigation state
+- last 16 values: 4 obstacle slots
+- each obstacle slot: body-frame x, body-frame y, clearance, radius
+
+Future work should not change the policy input shape unless the user explicitly
+requests a policy/interface change.
+
+## Documentation And Work Tracking
+
+Changing plans, PRDs, and task decomposition should live outside this file.
+
+Current project planning and task files may be found in:
+
+- `docs/`
+- `.scratch/`
+
+If those files disagree with this file, treat this file as the stable global
+context and treat the other documents as task-specific context that may need
+updating.

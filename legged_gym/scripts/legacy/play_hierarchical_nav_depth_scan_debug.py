@@ -12,20 +12,24 @@ from legged_gym.scripts.play_hierarchical_nav import (
     _load_jit_policy,
     _write_video_frame,
 )
-from legged_gym.scripts.play_hierarchical_nav_terrain import _configure_terrain_obstacle_demo
-from legged_gym.utils.nav_depth_scan import DepthScanConfig, NavDepthScanner
+from legged_gym.scripts.hierarchical_nav_demo_utils import (
+    create_depth_scan_config,
+    depth_camera_local_frame,
+    depth_camera_mount_position,
+    depth_camera_mount_quat,
+)
+from legged_gym.scripts.play_hierarchical_nav import _configure_terrain_obstacle_demo
+from legged_gym.utils.nav_depth_scan import NavDepthScanner
 from legged_gym.utils.nav_policy_loader import load_navigation_policy
 from legged_gym.utils.task_registry import get_args, task_registry
 
 
 SCAN_PRINT_STRIDE = 50
 SCAN_TRACK_ENV = 0
-CAMERA_MOUNT_BODY = "base_link"
-CAMERA_LOCAL_POSITION = np.array([0.23, 0.0, 0.16], dtype=np.float32)
-CAMERA_MOUNT_PITCH_DEG = 0.0
 
 
 def _create_depth_camera(env, scanner_config):
+    depth_cfg = env.cfg.navigation.depth_camera
     camera_props = gymapi.CameraProperties()
     camera_props.width = scanner_config.camera_width
     camera_props.height = scanner_config.camera_height
@@ -37,21 +41,19 @@ def _create_depth_camera(env, scanner_config):
     body_handle = env.gym.find_actor_rigid_body_handle(
         env.envs[SCAN_TRACK_ENV],
         env.actor_handles[SCAN_TRACK_ENV],
-        CAMERA_MOUNT_BODY,
+        depth_cfg.mount_body,
     )
     if body_handle == -1:
-        raise RuntimeError(f"Camera mount body not found: {CAMERA_MOUNT_BODY}")
+        raise RuntimeError(f"Camera mount body not found: {depth_cfg.mount_body}")
 
+    local_position = depth_camera_mount_position(env.cfg.navigation)
     local_transform = gymapi.Transform()
     local_transform.p = gymapi.Vec3(
-        float(CAMERA_LOCAL_POSITION[0]),
-        float(CAMERA_LOCAL_POSITION[1]),
-        float(CAMERA_LOCAL_POSITION[2]),
+        float(local_position[0]),
+        float(local_position[1]),
+        float(local_position[2]),
     )
-    local_transform.r = gymapi.Quat.from_axis_angle(
-        gymapi.Vec3(0.0, 1.0, 0.0),
-        float(np.deg2rad(CAMERA_MOUNT_PITCH_DEG)),
-    )
+    local_transform.r = depth_camera_mount_quat(gymapi, env.cfg.navigation)
     env.gym.attach_camera_to_body(
         camera_handle,
         env.envs[SCAN_TRACK_ENV],
@@ -76,12 +78,10 @@ def _attached_camera_frame(env):
     root_pos = env.root_states[SCAN_TRACK_ENV, :3].detach().cpu().numpy()
     root_quat = env.root_states[SCAN_TRACK_ENV, 3:7].detach().cpu().numpy()
 
-    pitch = float(np.deg2rad(CAMERA_MOUNT_PITCH_DEG))
-    local_forward = np.array([np.cos(pitch), 0.0, -np.sin(pitch)], dtype=np.float32)
-    local_right = np.array([0.0, -1.0, 0.0], dtype=np.float32)
-    local_up = np.array([np.sin(pitch), 0.0, np.cos(pitch)], dtype=np.float32)
+    local_position = depth_camera_mount_position(env.cfg.navigation)
+    local_forward, local_right, local_up = depth_camera_local_frame(env.cfg.navigation)
 
-    camera_pos = root_pos + _quat_rotate(root_quat, CAMERA_LOCAL_POSITION)
+    camera_pos = root_pos + _quat_rotate(root_quat, local_position)
     camera_forward = _quat_rotate(root_quat, local_forward)
     camera_right = _quat_rotate(root_quat, local_right)
     camera_up = _quat_rotate(root_quat, local_up)
@@ -132,11 +132,12 @@ def play(args):
     env_cfg, _ = task_registry.get_cfgs(name=args.task)
     _configure_terrain_obstacle_demo(env_cfg)
     env_cfg.env.enable_camera_sensors = True
+    env_cfg.navigation.depth_camera.enabled = True
 
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     env.reset()
 
-    scanner_config = DepthScanConfig()
+    scanner_config = create_depth_scan_config(env_cfg.navigation)
     scanner = NavDepthScanner(scanner_config)
     depth_camera = _create_depth_camera(env, scanner_config)
 
